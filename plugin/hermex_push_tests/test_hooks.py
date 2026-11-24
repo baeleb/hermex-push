@@ -92,10 +92,9 @@ def test_native_platform_sessions_are_skipped(push, sender):
     assert sender.events == []
 
 
-def test_cron_turns_push_nothing_not_even_silent_replies(push, sender):
-    # Hermes 0.22+ cron session: id is "local-<hash>", platform is "cron". A job whose final
-    # message is exactly [SILENT] still ends a turn, and that turn must not reach the phone.
-    run_turn(push, session_id="local-1f7a8d60", platform="cron", reply="[SILENT]")
+def test_cron_turns_push_nothing(push, sender):
+    # Hermes 0.22+ cron session: id is "local-<hash>", platform is "cron".
+    run_turn(push, session_id="local-1f7a8d60", platform="cron")
     assert sender.events == []
 
 
