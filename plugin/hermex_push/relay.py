@@ -1,7 +1,6 @@
 """Background delivery to the relay. Hooks run on the agent's turn path, so they only enqueue;
-one daemon thread POSTs with a short timeout and a single retry (none for progress the next
-update replaces). Nothing is persisted: a push that cannot be delivered within seconds is stale
-anyway."""
+one daemon thread POSTs with a short timeout and a short backoff (no retry for progress the next
+update replaces). Nothing is persisted: the app's cold-launch check covers a longer outage."""
 
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ logger = logging.getLogger("hermex_push")
 
 QUEUE_LIMIT = 256
 TIMEOUT_SECONDS = 10.0
-RETRY_DELAY_SECONDS = 2.0
+RETRY_DELAYS_SECONDS = (2.0, 6.0, 15.0)
 RESULT_BODY_LIMIT = 4096  # the relay answers {"result": "<word>"}
 
 PostFn = Callable[[str, bytes], tuple[int, str]]  # (url, body) -> (HTTP status, relay result)
@@ -124,15 +123,17 @@ class RelaySender:
                 self._queue.task_done()
 
     def deliver(self, url: str, event: dict[str, Any], on_result: Optional[ResultFn] = None) -> bool:
-        """Synchronous POST with one retry on a network error or 5xx. Progress gets no retry: it
-        would double traffic during a relay outage to resend a state the next update replaces.
-        The turn's last progress (``done`` / ``failed``) keeps it: nothing follows to replace it,
-        and the relay withholds the reply banner while the activity it ends still runs.
+        """Synchronous POST, retried on a network error or 5xx after each of
+        ``RETRY_DELAYS_SECONDS`` (4 attempts, about 23 s); a 4xx is final. Progress gets a single
+        attempt: retrying would multiply traffic during a relay outage to resend a state the next
+        update replaces. The turn's last progress (``done`` / ``failed``) is retried: nothing
+        follows to replace it, and the relay withholds the reply banner while the activity it ends
+        still runs. Retries hold the drain thread, so later events wait behind them.
         A 2xx hands the relay's ``result`` to ``on_result``. Never logs the body."""
         body = json.dumps(event, separators=(",", ":")).encode("utf-8")
         replaceable = event.get("kind") == "progress" and event.get("status") not in ("done", "failed")
-        attempts = 1 if replaceable else 2
-        for attempt in range(1, attempts + 1):
+        delays = () if replaceable else RETRY_DELAYS_SECONDS
+        for attempt in range(len(delays) + 1):
             try:
                 status, result = self._post(url, body)
             except Exception as exc:
@@ -146,8 +147,8 @@ class RelaySender:
             if status and status < 500:
                 logger.warning("hermex-push: relay rejected a %s event (%s)", event.get("kind"), reason)
                 return False
-            if attempt < attempts:
-                self._sleep(RETRY_DELAY_SECONDS)
+            if attempt < len(delays):
+                self._sleep(delays[attempt])
         logger.warning("hermex-push: relay unreachable for a %s event (%s)", event.get("kind"), reason)
         return False
 

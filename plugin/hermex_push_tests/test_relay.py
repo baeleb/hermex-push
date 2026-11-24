@@ -5,19 +5,28 @@ def test_notify_url_shape():
     assert notify_url("https://r.test/", "ab" * 32) == "https://r.test/installs/" + "ab" * 32 + "/notify"
 
 
-def test_deliver_retries_server_errors_once_and_gives_up_on_client_errors():
+def test_deliver_backs_off_through_server_errors():
+    calls, sleeps = [], []
+
+    def post(url, body):
+        calls.append(body)
+        return (503, "delivery_retry") if len(calls) < 4 else (200, "accepted")
+
+    sender = RelaySender(post=post, sleep=sleeps.append)
+    assert sender.deliver("https://r", {"kind": "progress", "status": "done"}) is True
+    assert len(calls) == 4 and b'"status":"done"' in calls[0]
+    assert sleeps == [2.0, 6.0, 15.0]
+
+
+def test_deliver_does_not_retry_client_errors():
     calls = []
 
     def post(url, body):
         calls.append(body)
-        return (503, "delivery_retry") if len(calls) < 2 else (200, "accepted")
+        return 401, "invalid_request"
 
-    sender = RelaySender(post=post, sleep=lambda s: None)
-    assert sender.deliver("https://r", {"kind": "reply"}) is True
-    assert len(calls) == 2 and b'"kind":"reply"' in calls[0]
-
-    sender = RelaySender(post=lambda u, b: (401, "invalid_request"), sleep=lambda s: None)
-    assert sender.deliver("https://r", {"kind": "reply"}) is False
+    assert RelaySender(post=post, sleep=lambda s: None).deliver("https://r", {"kind": "reply"}) is False
+    assert len(calls) == 1
 
 
 def test_progress_is_not_retried_unless_it_ends_the_turn():
@@ -38,9 +47,9 @@ def test_progress_is_not_retried_unless_it_ends_the_turn():
             assert attempts({"kind": "progress", "status": status}, failure) == 1
         # Nothing replaces a lost done/failed, and the activity it ends holds back the reply banner.
         for status in ("done", "failed"):
-            assert attempts({"kind": "progress", "status": status}, failure) == 2
+            assert attempts({"kind": "progress", "status": status}, failure) == 4
         for kind in ("reply", "approval", "clarify", "turn_error"):
-            assert attempts({"kind": kind}, failure) == 2
+            assert attempts({"kind": kind}, failure) == 4
 
 
 def test_enqueue_drains_on_a_background_thread():
