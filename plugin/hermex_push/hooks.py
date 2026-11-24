@@ -3,7 +3,7 @@ hermes-agent lifecycle hooks into relay events.
 
 Per turn: ``pre_llm_call`` records the platform and starts progress, ``post_llm_call`` captures
 the final reply text, ``on_session_end`` is the single boundary that sends exactly one ``reply``
-or ``turn_error`` (or nothing, for an interrupted turn). Approvals come from the
+or ``turn_error`` (or nothing, for an interrupted turn or a reply the agent marked silent). Approvals come from the
 ``pre_approval_request`` observer, questions from ``pre_tool_call`` on the ``clarify`` tool.
 Every callback swallows its own errors: a push must never break a turn. A session whose
 platform was never seen gets nothing (fail closed), so an evicted chat-platform session can
@@ -25,6 +25,7 @@ from .payload import notify_event, preview, progress_event
 from .privacy import keyed_id
 from .progress import ProgressCoalescer, ProgressSnapshot
 from .relay import RelaySender, ResultFn, allowed_relay_url, notify_url
+from .silence import is_intentional_silence_response, strip_trailing_silence_marker
 from .sources import coarse_source, should_notify
 
 logger = logging.getLogger("hermex_push")
@@ -326,7 +327,9 @@ class HermexPush:
                              body=turn_exit_reason or "The agent stopped without finishing.")
             elif completed and captured is not None:
                 user_message, reply = captured
-                self._notify("reply", session_id, ref, subtitle=user_message, body=reply)
+                if not is_intentional_silence_response(reply):
+                    self._notify("reply", session_id, ref, subtitle=user_message,
+                                 body=strip_trailing_silence_marker(reply))
         except Exception:
             logger.warning("hermex-push: on_session_end failed; a push was dropped", exc_info=True)
 
