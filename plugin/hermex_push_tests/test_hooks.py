@@ -43,6 +43,27 @@ def test_one_sealed_reply_per_completed_turn(push, sender, keys):
     assert [e["status"] for _, e in sender.events if e["kind"] == "progress"] == ["running", "done"]
 
 
+def reply_bodies(sender, keys):
+    return [unseal(e["sealed"], preview_key=keys.preview_key, install_key=keys.install_key)["body"]
+            for e in notifications(sender)]
+
+
+@pytest.mark.parametrize("reply", ["[SILENT]", " NO_REPLY. "])
+def test_a_reply_marked_silent_sends_no_reply_but_still_ends_the_activity(push, sender, reply):
+    run_turn(push, reply=reply)
+    assert notifications(sender) == []
+    assert [e["status"] for _, e in sender.events if e["kind"] == "progress"] == ["running", "done"]
+
+
+@pytest.mark.parametrize(("reply", "body"), [
+    ("Here is the answer.\n\n[SILENT]", "Here is the answer."),
+    ("I stayed SILENT because nothing changed.", "I stayed SILENT because nothing changed."),
+])
+def test_a_reply_loses_only_a_closing_silence_marker(push, sender, keys, reply, body):
+    run_turn(push, reply=reply)
+    assert reply_bodies(sender, keys) == [body]
+
+
 def test_webui_turns_carry_the_webui_source(push, sender):
     run_turn(push, platform="webui")
     assert notifications(sender)[0]["source"] == "webui"
